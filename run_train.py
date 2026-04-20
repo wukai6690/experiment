@@ -106,8 +106,8 @@ class Config:
         return names.get(self.model_size, "Qwen/Qwen2.5-1.5B")
 
     def get_batch_size(self) -> int:
-        sizes = {"0.5B": 4, "1.5B": 2, "3B": 1, "7B": 1}
-        return sizes.get(self.model_size, 2)
+        sizes = {"0.5B": 2, "1.5B": 1, "3B": 1, "7B": 1}
+        return sizes.get(self.model_size, 1)
 
     def get_lora_r(self) -> int:
         sizes = {"0.5B": 8, "1.5B": 16, "3B": 16, "7B": 32}
@@ -549,9 +549,10 @@ def run_sft(
 
     from transformers import (
         AutoTokenizer, AutoModelForCausalLM,
-        DataCollatorForLanguageModeling, Trainer, TrainingArguments
+        DataCollatorForLanguageModeling, Trainer, TrainingArguments,
+        BitsAndBytesConfig
     )
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
     # Tokenizer
     print("[SFT] 加载 tokenizer...")
@@ -561,20 +562,24 @@ def run_sft(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 模型
+    # 模型 - 4bit 量化 (QLoRA) + bfloat16
     print("[SFT] 加载模型...")
+    bnb_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float32,
+        quantization_config=bnb_quant_config,
         device_map="auto",
         trust_remote_code=True,
     )
 
     # LoRA
     print("[SFT] 应用 LoRA...")
-    for p in model.parameters():
-        p.requires_grad = False
-
+    model = prepare_model_for_kbit_training(model)
     lora_config = LoraConfig(
         r=config.get_lora_r(),
         lora_alpha=config.get_lora_r() * 2,
@@ -646,7 +651,7 @@ def run_sft(
         eval_strategy="steps",
         save_steps=max(1, steps_per_epoch),
         save_total_limit=2,
-        fp16=torch.cuda.is_available(),
+        bf16=True,
         remove_unused_columns=False,
         report_to=["tensorboard"],
         seed=config.seed,
@@ -694,7 +699,7 @@ def run_grpo(
     print("=" * 70)
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
     from trl import GRPOTrainer, GRPOConfig
     from datasets import Dataset as HFDataset
 
@@ -704,14 +709,22 @@ def run_grpo(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 加载模型
+    # 加载模型 - 使用 SFT 阶段的 QLoRA 权重
     print("[GRPO] 加载 SFT 模型...")
+    from transformers import BitsAndBytesConfig
+    bnb_quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         sft_model_path,
-        torch_dtype=torch.float32,
+        quantization_config=bnb_quant_config,
         device_map="auto",
         trust_remote_code=True,
     )
+    model = prepare_model_for_kbit_training(model)
 
     # 准备数据集 (ChatML 格式)
     print("[GRPO] 准备数据集...")
@@ -763,7 +776,7 @@ def run_grpo(
         num_generations=config.grpo_num_generations,
         beta=config.grpo_kl_coef,
         loss_type="grpo",
-        fp16=torch.cuda.is_available(),
+        bf16=True,
         report_to=["tensorboard"],
         seed=config.seed,
         remove_unused_columns=False,
@@ -817,8 +830,9 @@ def evaluate_model(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # 评测时用 BF16 而非量化，加载轻量
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.float32, device_map="auto", trust_remote_code=True
+        model_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
     )
     model.eval()
 
@@ -947,7 +961,7 @@ def main():
     print(f"[ENV] CUDA: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"[ENV] GPU: {torch.cuda.get_device_name(0)}")
-        print(f"[ENV] 显存: {torch.cuda.get_device_properties(0).total_mem/1e9:.1f} GB")
+        print(f"[ENV] 显存: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
     else:
         print("[ENV] WARNING: 无 GPU，训练将非常慢！")
 
