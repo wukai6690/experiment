@@ -1,0 +1,27 @@
+# Core deep learning
+torch>=2.0.0
+transformers>=4.40.0
+accelerate>=0.27.0
+bitsandbytes>=0.41.0
+peft>=0.10.0
+trl>=0.12.0  # GRPO/PPO training
+
+# Data processing
+datasets>=2.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Optimization solver
+pyomo>=6.6.0
+highspy>=0.4.0
+glpk>=5.0  # conda install -c conda-forge glpk
+
+# Training utilities
+tensorboard>=2.15.0
+tqdm>=4.66.0
+scikit-learn>=1.4.0
+
+# Utilities
+pyyaml>=6.0
+requests>=2.31.0
+huggingface_hub>=0.20.0
